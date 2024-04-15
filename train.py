@@ -22,6 +22,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from autoencoders.utils import decode_img
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -87,9 +88,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        # gt_image = viewpoint_cam.original_image.cuda()
+        gt_latent = viewpoint_cam.original_latent_image.cuda()
+        Ll1 = l1_loss(image, gt_latent)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_latent))
         loss.backward()
 
         iter_end.record()
@@ -170,14 +172,23 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test = 0.0
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+                    latent = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+                    gt_latent = torch.clamp(viewpoint.original_latent_image.to("cuda"), 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
+                    latent_reconst = torch.clamp(decode_img(latent, scene.auto_encoder, scene.scales), 0.0, 1.0)
+                    gt_reconstruct = torch.clamp(decode_img(gt_latent, scene.auto_encoder, scene.scales), 0.0, 1.0)
+                    # if tb_writer and (idx < 5):
+                    tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), latent[:3][None], global_step=iteration)
+                        # if iteration == testing_iterations[0]:
+                    tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_latent[:3][None], global_step=iteration)
+                    tb_writer.add_images(config['name'] + "_view_{}/groud_truth_image".format(viewpoint.image_name),
+                                         gt_image[None], global_step=iteration)
+                    tb_writer.add_images(config['name'] + "_view_{}/latent_reconstruction".format(viewpoint.image_name),
+                                         latent_reconst[None], global_step=iteration)
+                    tb_writer.add_images(config['name'] + "_view_{}/gt_reconstruction".format(viewpoint.image_name),
+                                         gt_reconstruct[None], global_step=iteration)
+                    l1_test += l1_loss(latent, gt_latent).mean().double()
+                    psnr_test += psnr(latent, gt_latent).mean().double()
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
@@ -216,7 +227,8 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    import numpy as np
+    # args.test_iterations = np.arange(0, args.test_iterations[-1], 100)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
-    print("aaaa")
     # All done
     print("\nTraining complete.")

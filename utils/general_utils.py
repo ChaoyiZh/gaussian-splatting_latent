@@ -18,6 +18,13 @@ import random
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
+def LatenttoTorch(latent, scales):
+    normalized_latent = (latent - scales["min"]) / (scales["max"] - scales["min"])
+    latent = torch.from_numpy(np.array(normalized_latent)).permute(2, 0, 1)
+
+    return latent
+
+
 def PILtoTorch(pil_image, resolution):
     resized_image_PIL = pil_image.resize(resolution)
     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
